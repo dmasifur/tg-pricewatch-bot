@@ -10,6 +10,8 @@
 		"lint:fix":"bun biome check --write .",
 		"db:local": "wrangler d1 execute pricewatch --local --file",
 		"db:remote": "wrangler d1 execute pricewatch --remote --file",
+		"db:migrate:local": "bash scripts/migrate.sh --local",
+		"db:migrate:remote": "bash scripts/migrate.sh --remote",
 		"typecheck": "tsc --noEmit",
 		"prepare": "husky"
 	},
