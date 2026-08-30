@@ -1,3 +1,5 @@
+import { parsePrice } from "./price";
+
 export interface ProductInfo {
   name?: string;
   price?: unknown;
@@ -115,6 +117,6 @@ function asString(v: unknown): string | undefined {
 }
 
 function numeric(v: unknown): number {
-  const n = typeof v === "number" ? v : Number.parseFloat(String(v).replace(/[^\d.]/g, ""));
-  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+  const parsed = parsePrice(v as string | number);
+  return parsed ? parsed.amount : Number.POSITIVE_INFINITY;
 }

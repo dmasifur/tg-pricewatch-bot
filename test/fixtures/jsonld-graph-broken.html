@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>Graph Store</title>
+
+  <script type="application/ld+json">{ "@type": "Product", "offers": { price: 10 } }</script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "BreadcrumbList", "itemListElement": [] },
+      {
+        "@type": ["Product", "Thing"],
+        "name": "Graph Widget",
+        "offers": [
+          { "@type": "Offer", "price": "30.00", "priceCurrency": "EUR" },
+          { "@type": "Offer", "price": "19,50", "priceCurrency": "EUR" }
+        ]
+      }
+    ]
+  }
+  </script>
+</head>
+<body><p>19,50 €</p></body>
+</html>
