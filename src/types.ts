@@ -10,6 +10,8 @@ export interface Env {
   MIN_INTERVAL_MINUTES: string;
   MAX_REGISTRATIONS_PER_HOUR: string;
   MAX_BODY_BYTES: string;
+  ADMIN_CHAT_ID: string;
+  STATS_PUBLIC: string;
 }
 
 export interface TgUser {
