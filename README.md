@@ -44,6 +44,14 @@ bunx wrangler secret put ADMIN_CHAT_ID    # your Telegram chat_id, for cron-fail
 
 Non-secret config (rate limits, TTLs, portfolio/gig links) lives in `wrangler.toml`'s `[vars]`.
 
+`wrangler secret put` only sets secrets for the **deployed** Worker. For local development (`bun run dev`), put the same three values in a `.dev.vars` file at the repo root instead — it's already gitignored:
+
+```
+BOT_TOKEN=...
+WEBHOOK_SECRET=...
+ADMIN_CHAT_ID=...
+```
+
 ### 4. Register the Telegram webhook
 
 Once deployed (see below), point Telegram at it:
