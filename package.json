@@ -6,6 +6,8 @@
 		"dev": "wrangler dev",
 		"deploy": "wrangler deploy",
 		"test": "vitest run",
+		"lint":"biome check .",
+		"lint:fix":"bun biome check --write .",
 		"db:local": "wrangler d1 execute pricewatch --local --file=./schema.sql",
 		"db:remote": "wrangler d1 execute pricewatch --remote --file=./schema.sql",
 		"typecheck": "tsc --noEmit",
