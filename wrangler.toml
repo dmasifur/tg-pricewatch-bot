@@ -1,0 +1,21 @@
+name = "tg-pricewatch-bot"
+main = "src/index.ts"
+compatibility_date = "2026-08-28"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pricewatch"
+database_id = "1b03b3eb-cab1-44d9-aebe-8640e8e7d12d"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+PORTFOLIO_URL = "https://asifur.dev"
+GIG_URL = "https://www.fiverr.com/updateme"
+MAX_ACTIVE_WATCHES = "3"
+WATCH_TTL_DAYS = "7"
+MIN_INTERVAL_MINUTES = "60"
+MAX_REGISTRATIONS_PER_HOUR = "5"
+MAX_BODY_BYTES = "2097152"
