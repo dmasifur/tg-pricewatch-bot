@@ -1,3 +1,4 @@
+import { handleCallback } from "./handlers/callbacks";
 import { handleMessage } from "./handlers/commands";
 import { Telegram } from "./lib/telegram";
 import type { Env, TgUpdate } from "./types";
@@ -28,14 +29,12 @@ export default {
 			) {
 				return new Response("forbidden", { status: 403 });
 			}
-
 			let update: TgUpdate;
 			try {
 				update = await request.json();
 			} catch {
 				return new Response("ok");
 			}
-
 			ctx.waitUntil(dispatch(update, env));
 			return new Response("ok");
 		}
@@ -48,10 +47,17 @@ export default {
 		env: Env,
 		_ctx: ExecutionContext,
 	): Promise<void> {
+		const now = new Date().toISOString();
+		// Expire pending picks and lapsed watches before the sweep (Phase 2).
+		await env.DB.prepare(
+			"DELETE FROM watches WHERE status = 'pending' AND expires_at <= ?",
+		)
+			.bind(now)
+			.run();
 		const due = await env.DB.prepare(
 			"SELECT id, url FROM watches WHERE status = 'active' AND next_check_at <= ? ORDER BY next_check_at LIMIT 20",
 		)
-			.bind(new Date().toISOString())
+			.bind(now)
 			.all();
 		console.log(`sweep: ${due.results?.length ?? 0} watches due`);
 	},
@@ -63,7 +69,7 @@ async function dispatch(update: TgUpdate, env: Env): Promise<void> {
 		if (update.message) {
 			await handleMessage(update.message, env, tg);
 		} else if (update.callback_query) {
-			await tg.answerCallbackQuery(update.callback_query.id);
+			await handleCallback(update.callback_query, env, tg);
 		}
 	} catch (err) {
 		console.error("dispatch failed", err);

@@ -1,44 +1,52 @@
-import { assertSafeUrl, UnsafeUrlError } from "../lib/fetcher";
-import { escapeHtml, type Telegram } from "../lib/telegram";
-import type { Env, InlineButton, TgMessage } from "../types";
+import type { Telegram } from "../lib/telegram";
+import type { Env, TgMessage } from "../types";
+import { sendList } from "./callbacks";
+import { startWatch } from "./watch";
 
 const START_TEXT =
 	"I watch product pages and message you when the price drops.\n\n" +
 	"Send me a product link, or tap below to see it work.";
-
-const startKeyboard: InlineButton[][] = [
-	[{ text: "▶️  See it work", callback_data: "demo:start" }],
-	[{ text: "📋  My watches", callback_data: "list:1" }],
-];
 
 export async function handleMessage(
 	msg: TgMessage,
 	env: Env,
 	tg: Telegram,
 ): Promise<void> {
-	const chatId = msg.chat?.id;
-
-	const text = msg.text?.trim() ?? "";
+	const chatId = msg.chat.id;
+	const text = (msg.text ?? "").trim();
 	if (!text) return;
 
-	await ensureUser(chatId, env);
+	const user = await ensureUser(chatId, env);
+
+	if (user.pending_action && !text.startsWith("/")) {
+		await resolvePendingAction(chatId, user.pending_action, text, env, tg);
+		return;
+	}
 
 	if (text.startsWith("/")) {
-		const command = text.split(/[\s@]/)[0]?.toLowerCase();
+		await env.DB.prepare(
+			"UPDATE users SET pending_action = NULL WHERE chat_id = ?",
+		)
+			.bind(chatId)
+			.run();
+		const command = text?.split(/[\s@]/)[0]?.toLowerCase();
 		switch (command) {
 			case "/start":
-				await tg.sendMessage(chatId, START_TEXT, startKeyboard);
+				await tg.sendMessage(chatId, START_TEXT, [
+					[{ text: "▶️  See it work", callback_data: "demo:start" }],
+					[{ text: "📋  My watches", callback_data: "list:1" }],
+				]);
+				return;
+			case "/list":
+				await sendList(chatId, env, tg);
 				return;
 			case "/demo":
 				await tg.sendMessage(chatId, "Setting up a demo watch…"); // Phase 3
 				return;
-			case "/list":
-				await tg.sendMessage(chatId, "You have no active watches yet."); // Phase 1
-				return;
 			case "/about":
 				await tg.sendMessage(
 					chatId,
-					"Built by <b>asifur.dev</b> - automation, scraping and internal tooling.",
+					"Built by <b>asifur.dev</b> — automation, scraping and internal tooling.",
 					[
 						[
 							{ text: "Portfolio", url: env.PORTFOLIO_URL },
@@ -60,8 +68,7 @@ export async function handleMessage(
 			case "/help":
 				await tg.sendMessage(
 					chatId,
-					"Send a product link to watch it.\n\n" +
-						"/list - your watches\n/demo - see it work\n/about - who built this\n/forget - delete my data",
+					"Send a product link to watch it.\n\n/list — your watches\n/demo — see it work\n/about — who built this\n/forget — delete my data",
 				);
 				return;
 			default:
@@ -78,29 +85,62 @@ export async function handleMessage(
 		);
 		return;
 	}
-
-	try {
-		const url = assertSafeUrl(candidate);
-
-		await tg.sendMessage(
-			chatId,
-			`Checking <b>${escapeHtml(url.hostname)}</b>…`,
-		);
-	} catch (err) {
-		const message =
-			err instanceof UnsafeUrlError
-				? err.message
-				: "I couldn't read that link.";
-		await tg.sendMessage(chatId, message);
-	}
+	await startWatch(chatId, candidate, env, tg);
 }
 
-async function ensureUser(chatId: number, env: Env): Promise<void> {
+async function resolvePendingAction(
+	chatId: number,
+	action: string,
+	text: string,
+	env: Env,
+	tg: Telegram,
+): Promise<void> {
+	const [kind, arg] = action.split(":");
+	await env.DB.prepare(
+		"UPDATE users SET pending_action = NULL WHERE chat_id = ?",
+	)
+		.bind(chatId)
+		.run();
+
+	if (kind !== "target") return;
+
+	const { parsePrice, formatPrice } = await import("../lib/price");
+	const parsed = parsePrice(text);
+	if (!parsed) {
+		await tg.sendMessage(
+			chatId,
+			"I couldn't read that as a price. Tap 🎯 Set target again to retry.",
+		);
+		return;
+	}
+
+	const updated = await env.DB.prepare(
+		"UPDATE watches SET target_price = ?, notify_mode = 'target' WHERE id = ? AND chat_id = ? RETURNING currency",
+	)
+		.bind(parsed.amount, Number(arg), chatId)
+		.first<{ currency: string | null }>();
+
+	if (!updated) {
+		await tg.sendMessage(chatId, "That watch is gone.");
+		return;
+	}
+	await tg.sendMessage(
+		chatId,
+		`Set. I'll message you when it hits ${formatPrice(parsed.amount, updated.currency)} or lower.`,
+	);
+}
+
+async function ensureUser(chatId: number, env: Env) {
 	await env.DB.prepare(
 		"INSERT INTO users (chat_id, first_seen) VALUES (?, ?) ON CONFLICT(chat_id) DO NOTHING",
 	)
 		.bind(chatId, new Date().toISOString())
 		.run();
+	return (await env.DB.prepare(
+		"SELECT pending_action FROM users WHERE chat_id = ?",
+	)
+		.bind(chatId)
+		.first<{ pending_action: string | null }>())!;
 }
 
 async function forgetUser(chatId: number, env: Env): Promise<void> {
