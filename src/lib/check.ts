@@ -3,6 +3,7 @@ import { resolve, scanPage } from "./extract";
 import { fetchPage } from "./fetcher";
 import { percentChange, sparkline } from "./history";
 import { type Decision, decideAlert, type LastAlert } from "./notify";
+import { bump } from "./ops";
 import { formatPrice } from "./price";
 import { escapeHtml, type Telegram } from "./telegram";
 
@@ -76,6 +77,8 @@ export async function checkWatch(
   )
     .bind(watch.id, new Date(now).toISOString(), price, boolToInt(inStock), status)
     .run();
+
+  await bump(env, price === null ? { checks_failed: 1 } : { checks_ok: 1 });
 
   if (price === null) {
     await recordFailure(watch, env, tg, budget);
@@ -157,7 +160,7 @@ async function sendAlert(
   await env.DB.prepare("INSERT INTO alerts (watch_id, sent_at, kind, price) VALUES (?,?,?,?)")
     .bind(watch.id, new Date().toISOString(), decision.kind, decision.newPrice)
     .run();
-
+  await bump(env, { alerts_sent: 1 });
   await maybePitch(watch.chat_id, env, tg, budget);
 }
 

@@ -1,5 +1,6 @@
 import type { Env, InlineButton } from "../types";
 import { type Budget, checkWatch, spend, type WatchRow } from "./check";
+import { alertAdmin, bump, clearAlert, setState } from "./ops";
 import { escapeHtml, type Telegram } from "./telegram";
 
 const SUBREQUEST_BUDGET = 40;
@@ -15,40 +16,18 @@ export interface SweepStats {
 }
 
 export async function runSweep(env: Env, tg: Telegram): Promise<SweepStats> {
-  const now = new Date();
-  const nowIso = now.toISOString();
-  const budget: Budget = { remaining: SUBREQUEST_BUDGET };
-
-  const [, expiredResult] = await env.DB.batch([
-    env.DB.prepare("DELETE FROM watches WHERE status = 'pending' AND expires_at <= ?").bind(nowIso),
-    env.DB.prepare(
-      "UPDATE watches SET status = 'expired' WHERE status IN ('active','failing') AND expires_at <= ?",
-    ).bind(nowIso),
-    env.DB.prepare("DELETE FROM watches WHERE status = 'expired' AND expires_at <= ?").bind(
-      new Date(now.getTime() - RETENTION_DAYS * 86_400_000).toISOString(),
-    ),
-  ]);
-  const expired = expiredResult?.meta.changes ?? 0;
-
-  const warned = await warnExpiring(env, tg, budget, now);
-
-  const due = await env.DB.prepare(
-    `SELECT id, chat_id, url, host, title, currency, last_price, target_price, notify_mode,
-            selector, interval_minutes, fail_count, last_in_stock
-     FROM watches WHERE status IN ('active','failing') AND next_check_at <= ?
-     ORDER BY next_check_at LIMIT ?`,
-  )
-    .bind(nowIso, BATCH_SIZE)
-    .all<WatchRow>();
-
-  const watches = due.results ?? [];
-  for (let i = 0; i < watches.length; i += CONCURRENCY) {
-    const slice = watches.slice(i, i + CONCURRENCY);
-    await Promise.all(slice.map((watch) => checkWatch(watch, env, tg, budget)));
-    if (budget.remaining <= 2) break;
+  const startedAt = Date.now();
+  try {
+    const stats = await sweepInner(env, tg);
+    await setState(env, "last_sweep", String(startedAt));
+    await bump(env, { sweeps: 1 });
+    await clearAlert(env, "sweep_failed");
+    return stats;
+  } catch (error) {
+    await bump(env, { sweeps: 1 });
+    await alertAdmin(env, "sweep_failed", `Sweep threw: ${String(error).slice(0, 300)}`);
+    throw error;
   }
-
-  return { checked: watches.length, expired, warned };
 }
 
 async function warnExpiring(env: Env, tg: Telegram, budget: Budget, now: Date): Promise<number> {
@@ -89,4 +68,43 @@ async function warnExpiring(env: Env, tg: Telegram, budget: Budget, now: Date): 
     sent += 1;
   }
   return sent;
+}
+async function sweepInner(env: Env, tg: Telegram): Promise<SweepStats> {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const budget: Budget = { remaining: SUBREQUEST_BUDGET };
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM watches WHERE status = 'pending' AND expires_at <= ?").bind(nowIso),
+    env.DB.prepare(
+      "UPDATE watches SET status = 'expired' WHERE status IN ('active','failing') AND expires_at <= ?",
+    ).bind(nowIso),
+    env.DB.prepare("DELETE FROM watches WHERE status = 'expired' AND expires_at <= ?").bind(
+      new Date(now.getTime() - RETENTION_DAYS * 86_400_000).toISOString(),
+    ),
+  ]);
+
+  const warned = await warnExpiring(env, tg, budget, now);
+
+  const due = await env.DB.prepare(
+    `SELECT id, chat_id, url, host, title, currency, last_price, target_price, notify_mode,
+            selector, interval_minutes, fail_count, last_in_stock
+     FROM watches WHERE status IN ('active','failing') AND next_check_at <= ?
+     ORDER BY next_check_at LIMIT ?`,
+  )
+    .bind(nowIso, BATCH_SIZE)
+    .all<WatchRow>();
+
+  const watches = due.results ?? [];
+  for (let i = 0; i < watches.length; i += CONCURRENCY) {
+    const slice = watches.slice(i, i + CONCURRENCY);
+    await Promise.all(slice.map((watch) => checkWatch(watch, env, tg, budget)));
+
+    if (budget.remaining <= 2) {
+      await bump(env, { budget_exhausted: 1 });
+      break;
+    }
+  }
+
+  return { checked: watches.length, expired: 0, warned };
 }
