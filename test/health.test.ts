@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { evaluate, STALE_SWEEP_MS } from "../src/lib/health";
 import type { StatsSnapshot } from "../src/lib/ops";
 

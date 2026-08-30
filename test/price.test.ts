@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { detectCurrency, formatPrice, parsePrice } from "../src/lib/price";
 
 describe("parsePrice", () => {
