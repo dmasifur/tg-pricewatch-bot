@@ -8,6 +8,7 @@ const BATCH_SIZE = 15;
 const CONCURRENCY = 5;
 const EXPIRY_WARNING_LIMIT = 5;
 const RETENTION_DAYS = 30;
+const RATE_LIMIT_RETENTION_HOURS = 48;
 
 export interface SweepStats {
   checked: number;
@@ -81,6 +82,11 @@ async function sweepInner(env: Env, tg: Telegram): Promise<SweepStats> {
     ).bind(nowIso),
     env.DB.prepare("DELETE FROM watches WHERE status = 'expired' AND expires_at <= ?").bind(
       new Date(now.getTime() - RETENTION_DAYS * 86_400_000).toISOString(),
+    ),
+    env.DB.prepare("DELETE FROM rate_limits WHERE window_start <= ?").bind(
+      new Date(now.getTime() - RATE_LIMIT_RETENTION_HOURS * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 13),
     ),
   ]);
 

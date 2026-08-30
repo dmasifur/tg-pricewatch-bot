@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { type DecisionInput, decideAlert } from "../src/lib/notify";
 
 const NOW = Date.parse("2026-08-30T12:00:00Z");
