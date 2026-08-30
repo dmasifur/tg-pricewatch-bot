@@ -1,6 +1,9 @@
+import { startDemo } from "../lib/demo";
+import { formatPrice, parsePrice } from "../lib/price";
 import type { Telegram } from "../lib/telegram";
 import type { Env, TgMessage } from "../types";
 import { sendList } from "./callbacks";
+import { continueHire, type HireStep, startHire } from "./hire";
 import { startWatch } from "./watch";
 
 const START_TEXT =
@@ -14,9 +17,16 @@ export async function handleMessage(msg: TgMessage, env: Env, tg: Telegram): Pro
 
   const user = await ensureUser(chatId, env);
 
-  if (user.pending_action && !text.startsWith("/")) {
-    await resolvePendingAction(chatId, user.pending_action, text, env, tg);
-    return;
+  if (user.pending_action !== null && !text.startsWith("/")) {
+    const [kind, arg] = user.pending_action.split(":");
+    if (kind === "hire" && (arg === "use_case" || arg === "contact")) {
+      await continueHire(chatId, arg as HireStep, text, msg.from, env, tg);
+      return;
+    }
+    if (kind === "target" && arg !== undefined) {
+      await resolvePendingAction(chatId, user.pending_action, text, env, tg);
+      return;
+    }
   }
 
   if (text.startsWith("/")) {
@@ -35,7 +45,7 @@ export async function handleMessage(msg: TgMessage, env: Env, tg: Telegram): Pro
         await sendList(chatId, env, tg);
         return;
       case "/demo":
-        await tg.sendMessage(chatId, "Setting up a demo watch…"); // Phase 3
+        await startDemo(chatId, env, tg);
         return;
       case "/about":
         await tg.sendMessage(
@@ -50,7 +60,7 @@ export async function handleMessage(msg: TgMessage, env: Env, tg: Telegram): Pro
         );
         return;
       case "/hire":
-        await tg.sendMessage(chatId, "What would you want automated?"); // Phase 3
+        await startHire(chatId, env, tg);
         return;
       case "/forget":
         await forgetUser(chatId, env);
@@ -64,6 +74,9 @@ export async function handleMessage(msg: TgMessage, env: Env, tg: Telegram): Pro
           chatId,
           "Send a product link to watch it.\n\n/list — your watches\n/demo — see it work\n/about — who built this\n/forget — delete my data",
         );
+        return;
+      case "/cancel":
+        await tg.sendMessage(chatId, "Cancelled.");
         return;
       default:
         await tg.sendMessage(chatId, "I don't know that command. Try /help.");
@@ -93,7 +106,6 @@ async function resolvePendingAction(
 
   if (kind !== "target") return;
 
-  const { parsePrice, formatPrice } = await import("../lib/price");
   const parsed = parsePrice(text);
   if (!parsed) {
     await tg.sendMessage(

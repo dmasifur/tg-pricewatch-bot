@@ -1,3 +1,4 @@
+import { startDemo } from "../lib/demo";
 import { clampInterval, isoIn } from "../lib/limits";
 import { formatPrice } from "../lib/price";
 import { escapeHtml, type Telegram } from "../lib/telegram";
@@ -7,7 +8,13 @@ import { confirmationKeyboard, confirmCandidate } from "./watch";
 export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram): Promise<void> {
   const chatId = cq.message?.chat.id;
   const data = cq.data ?? "";
-  if (!chatId) return;
+  if (chatId === undefined) return;
+
+  if (data === "demo:start") {
+    await tg.answerCallbackQuery(cq.id);
+    await startDemo(chatId, env, tg);
+    return;
+  }
 
   if (data.startsWith("list:")) {
     await tg.answerCallbackQuery(cq.id);
@@ -23,7 +30,6 @@ export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram
   const [, idRaw, action, arg] = match;
   const watchId = Number(idRaw);
 
-  // Ownership check — callback_data is client-supplied and trivially forged.
   const owned = await env.DB.prepare(
     "SELECT id, title, host FROM watches WHERE id = ? AND chat_id = ?",
   )
@@ -105,6 +111,19 @@ export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram
         .bind(new Date(Date.now() + days * 86_400_000).toISOString(), watchId, chatId)
         .run();
       await tg.answerCallbackQuery(cq.id, `Extended ${days} more days`);
+      return;
+    }
+
+    case "pause": {
+      const row = await env.DB.prepare(
+        `UPDATE watches SET status = CASE WHEN status = 'paused' THEN 'active' ELSE 'paused' END,
+             paused_reason = CASE WHEN status = 'paused' THEN NULL ELSE 'user' END,
+             next_check_at = ?
+           WHERE id = ? AND chat_id = ? RETURNING status`,
+      )
+        .bind(new Date().toISOString(), watchId, chatId)
+        .first<{ status: string }>();
+      await tg.answerCallbackQuery(cq.id, row?.status === "paused" ? "Paused" : "Resumed");
       return;
     }
 

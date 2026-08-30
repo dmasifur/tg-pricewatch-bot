@@ -1,7 +1,7 @@
 import { type PriceCandidate, resolve, scanCandidates, scanPage } from "../lib/extract";
 import { assertSafeUrl, type FetchedPage, fetchPage, UnsafeUrlError } from "../lib/fetcher";
 import { checkWatchLimits, clampInterval, isoIn, recordRegistration } from "../lib/limits";
-import { formatPrice } from "../lib/price";
+import { formatPrice, parsePrice } from "../lib/price";
 import { escapeHtml, type Telegram } from "../lib/telegram";
 import type { Env, InlineButton } from "../types";
 
@@ -118,7 +118,6 @@ export async function confirmCandidate(
   const picked = candidates[index];
   if (!picked) return { ok: false };
 
-  const { parsePrice } = await import("../lib/price");
   const price = parsePrice(picked.text);
   if (!price) return { ok: false };
 

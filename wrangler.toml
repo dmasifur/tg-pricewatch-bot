@@ -9,7 +9,7 @@ database_name = "pricewatch"
 database_id = "1b03b3eb-cab1-44d9-aebe-8640e8e7d12d"
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "* * * * *"]
 
 [vars]
 PORTFOLIO_URL = "https://asifur.dev"
