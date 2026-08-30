@@ -1,5 +1,6 @@
 import { handleCallback } from "./handlers/callbacks";
 import { handleMessage } from "./handlers/commands";
+import { advanceDemos } from "./lib/demo";
 import { runSweep } from "./lib/sweep";
 import { Telegram } from "./lib/telegram";
 import type { Env, TgUpdate } from "./types";
@@ -36,18 +37,21 @@ export default {
     return new Response("not found", { status: 404 });
   },
 
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const tg = new Telegram(env.BOT_TOKEN);
+    const job =
+      event.cron === "* * * * *"
+        ? advanceDemos(env, tg).then((n) => {
+            if (n > 0) console.log(`demo: advanced ${n}`);
+          })
+        : runSweep(env, tg).then((stats) => {
+            console.log(`sweep checked=${stats.checked} warned=${stats.warned}`);
+          });
+
     ctx.waitUntil(
-      runSweep(env, tg)
-        .then((stats) => {
-          console.log(`sweep checked=${stats.checked} warned=${stats.warned}`);
-        })
-        .catch((error: unknown) => {
-          // Cron Triggers do not retry. The due-queue is self-healing because
-          // work is defined by next_check_at, so a lost tick recovers on the next.
-          console.error("sweep failed", error);
-        }),
+      job.catch((error: unknown) => {
+        console.error(`cron ${event.cron} failed`, error);
+      }),
     );
   },
 };
