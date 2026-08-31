@@ -87,3 +87,13 @@ describe("scanCandidates", () => {
     expect(candidates[0]?.text).toBe("$12.00");
   });
 });
+
+describe("scanCandidates — ranking against real cross-sell noise", () => {
+  const loadLive = (name: string) => Bun.file(`${import.meta.dir}/fixtures/live/${name}`).text();
+
+  it("ranks Amazon's real buy-box price above a 'value pick' bundle upsell and a cross-sell carousel", async () => {
+    const candidates = await scanCandidates(await loadLive("amazon-B0H2VN7622.html"));
+    expect(candidates[0]?.text).toBe("$39.99");
+    expect(candidates[0]?.selector).not.toContain("value-pick");
+  });
+});

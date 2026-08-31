@@ -169,6 +169,11 @@ export interface PriceCandidate {
 const CURRENCY_TEXT =
   /(?:[$€£¥₹₽₺₩৳]|\b(?:USD|EUR|GBP|JPY|INR|AUD|CAD|BRL|PLN|SEK|BDT)\b)\s*\d[\d.,\s]{0,14}|\d[\d.,]{0,14}\s*(?:€|£|zł|kr|₹|৳)/i;
 const PRICEY_ATTR = /price|amount|cost|offer|money/i;
+// Ancestor markers scanCandidates uses to boost the real price / penalise cross-sell widgets.
+const PRIMARY_PRICE_CONTAINER =
+  /coreprice|priceblock|apexpricetopay|a-price|price-current|saleprice/i;
+const CROSS_SELL_CONTAINER =
+  /\bsims\b|p13n|similar|related|also-?bought|you-?may-?also|value-?pick|recommend|bundle/i;
 
 export async function scanCandidates(html: string): Promise<PriceCandidate[]> {
   const stack: Array<{ tag: string; id?: string; cls?: string }> = [];
@@ -268,6 +273,13 @@ function scoreOf(stack: Array<{ tag: string; id?: string; cls?: string }>, order
   }
   const leaf = stack[stack.length - 1];
   if (leaf && (leaf.id || leaf.cls)) score += 10;
+
+  // Checks the full ancestor chain, not just the nearest 3 frames.
+  for (const frame of stack) {
+    const marker = `${frame.id ?? ""} ${frame.cls ?? ""}`;
+    if (CROSS_SELL_CONTAINER.test(marker)) score -= 60;
+    if (PRIMARY_PRICE_CONTAINER.test(marker)) score += 50;
+  }
   return score;
 }
 
