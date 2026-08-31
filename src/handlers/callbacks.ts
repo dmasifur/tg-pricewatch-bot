@@ -1,9 +1,10 @@
 import { startDemo } from "../lib/demo";
+import { GUIDE_TEXT } from "../lib/guide";
 import { clampInterval, isoIn } from "../lib/limits";
 import { formatPrice } from "../lib/price";
 import { escapeHtml, type Telegram } from "../lib/telegram";
 import type { Env, InlineButton, TgCallbackQuery } from "../types";
-import { confirmationKeyboard, confirmCandidate } from "./watch";
+import { confirmationKeyboard, confirmCandidate, summaryText } from "./watch";
 
 export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram): Promise<void> {
   const chatId = cq.message?.chat.id;
@@ -22,6 +23,15 @@ export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram
     return;
   }
 
+  if (data === "guide:open") {
+    await tg.answerCallbackQuery(cq.id);
+    await tg.sendMessage(chatId, GUIDE_TEXT, [
+      [{ text: "▶️  See it work", callback_data: "demo:start" }],
+      [{ text: "📋  My watches", callback_data: "list:1" }],
+    ]);
+    return;
+  }
+
   const match = data.match(/^w:(\d+):(\w+)(?::(\w+))?$/);
   if (!match) {
     await tg.answerCallbackQuery(cq.id);
@@ -31,25 +41,45 @@ export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram
   const watchId = Number(idRaw);
 
   const owned = await env.DB.prepare(
-    "SELECT id, title, host FROM watches WHERE id = ? AND chat_id = ?",
+    `SELECT id, title, host, last_price, currency, notify_mode, target_price, interval_minutes
+       FROM watches WHERE id = ? AND chat_id = ?`,
   )
     .bind(watchId, chatId)
-    .first<{ id: number; title: string | null; host: string }>();
+    .first<{
+      id: number;
+      title: string | null;
+      host: string;
+      last_price: number | null;
+      currency: string | null;
+      notify_mode: string;
+      target_price: number | null;
+      interval_minutes: number;
+    }>();
   if (!owned) {
     await tg.answerCallbackQuery(cq.id, "That watch is gone.");
     return;
   }
+
+  const render = (overrides: Partial<Parameters<typeof summaryText>[0]>) =>
+    summaryText({
+      title: owned.title ?? undefined,
+      host: owned.host,
+      price: owned.last_price !== null ? formatPrice(owned.last_price, owned.currency) : "—",
+      notifyMode: owned.notify_mode,
+      targetPrice: owned.target_price ? formatPrice(owned.target_price, owned.currency) : undefined,
+      intervalMinutes: owned.interval_minutes,
+      ...overrides,
+    });
 
   switch (action) {
     case "c": {
       const outcome = await confirmCandidate(watchId, Number(arg), env);
       await tg.answerCallbackQuery(cq.id, outcome.ok ? "Got it" : "Couldn't read that one");
       if (outcome.ok && cq.message) {
-        const label = outcome.label ?? "unknown";
         await tg.editMessageText(
           chatId,
           cq.message.message_id,
-          `<b>${escapeHtml(owned.title ?? owned.host)}</b>\nCurrent price: <b>${escapeHtml(label)}</b>\n\nWatching from now on.`,
+          render({ price: outcome.label ?? "unknown", notifyMode: "any_drop" }),
           confirmationKeyboard(watchId, env),
         );
       }
@@ -80,6 +110,14 @@ export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram
           .bind(watchId)
           .run();
         await tg.answerCallbackQuery(cq.id, "I'll alert on any drop");
+        if (cq.message) {
+          await tg.editMessageText(
+            chatId,
+            cq.message.message_id,
+            render({ notifyMode: "any_drop", targetPrice: undefined }),
+            confirmationKeyboard(watchId, env),
+          );
+        }
       }
       return;
     case "i": {
@@ -93,6 +131,14 @@ export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram
         cq.id,
         `Checking every ${minutes >= 60 ? `${minutes / 60}h` : `${minutes}m`}`,
       );
+      if (cq.message) {
+        await tg.editMessageText(
+          chatId,
+          cq.message.message_id,
+          render({ intervalMinutes: minutes }),
+          confirmationKeyboard(watchId, env),
+        );
+      }
       return;
     }
     case "del":
@@ -134,7 +180,7 @@ export async function handleCallback(cq: TgCallbackQuery, env: Env, tg: Telegram
 
 export async function sendList(chatId: number, env: Env, tg: Telegram): Promise<void> {
   const rows = await env.DB.prepare(
-    `SELECT id, title, host, last_price, currency, target_price, interval_minutes, expires_at
+    `SELECT id, title, host, last_price, currency, target_price, interval_minutes, expires_at, status
      FROM watches WHERE chat_id = ? AND status IN ('active','failing') ORDER BY created_at DESC LIMIT 5`,
   )
     .bind(chatId)
@@ -147,11 +193,15 @@ export async function sendList(chatId: number, env: Env, tg: Telegram): Promise<
       target_price: number | null;
       interval_minutes: number;
       expires_at: string;
+      status: string;
     }>();
 
   const list = rows.results ?? [];
   if (!list.length) {
-    await tg.sendMessage(chatId, "No active watches. Send me a product link to start one.");
+    await tg.sendMessage(
+      chatId,
+      "No active watches yet. Send me a product link to start one — or try /guide if you're not sure how.",
+    );
     return;
   }
 
@@ -159,7 +209,8 @@ export async function sendList(chatId: number, env: Env, tg: Telegram): Promise<
     const price = w.last_price !== null ? formatPrice(w.last_price, w.currency) : "—";
     const target = w.target_price ? ` · target ${formatPrice(w.target_price, w.currency)}` : "";
     const days = Math.max(0, Math.ceil((Date.parse(w.expires_at) - Date.now()) / 86_400_000));
-    return `• <b>${escapeHtml(w.title ?? w.host)}</b>\n  ${escapeHtml(price)}${escapeHtml(target)} · expires in ${days}d`;
+    const warning = w.status === "failing" ? "\n  ⚠️ Having trouble reading this page lately" : "";
+    return `• <b>${escapeHtml(w.title ?? w.host)}</b>\n  ${escapeHtml(price)}${escapeHtml(target)} · expires in ${days}d${warning}`;
   });
 
   const keyboard: InlineButton[][] = list.map((w) => [
