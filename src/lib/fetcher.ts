@@ -1,3 +1,10 @@
+// Must be an exact browser UA — Amazon serves a stripped, price-free page to
+// anything else, even a browser string with a contact suffix appended.
+// Self-identification goes in the X-Bot-Contact header instead.
+export const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+export const BOT_CONTACT_HEADER = "https://asifur.dev (PriceWatchBot; contact via Telegram)";
+
 const BLOCKED_HOST_PATTERNS = [
   /^localhost$/i,
   /\.local$/i,
@@ -55,10 +62,15 @@ export interface FetchedPage {
   truncated: boolean;
 }
 
-export async function fetchPage(
+interface RawFetch {
+  finalUrl: URL;
+  response: Response;
+}
+
+async function fetchWithRedirects(
   rawUrl: string,
-  opts: { maxBytes: number; timeoutMs?: number; userAgent: string },
-): Promise<FetchedPage> {
+  opts: { timeoutMs?: number; userAgent?: string; accept?: string },
+): Promise<RawFetch> {
   let current = assertSafeUrl(rawUrl);
   let response: Response | null = null;
 
@@ -67,8 +79,9 @@ export async function fetchPage(
       redirect: "manual",
       signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
       headers: {
-        "user-agent": opts.userAgent,
-        accept: "text/html,application/xhtml+xml",
+        "user-agent": opts.userAgent ?? USER_AGENT,
+        "x-bot-contact": BOT_CONTACT_HEADER,
+        accept: opts.accept ?? "text/html,application/xhtml+xml",
         "accept-language": "en-US,en;q=0.9",
       },
     });
@@ -84,11 +97,19 @@ export async function fetchPage(
   }
 
   if (!response) throw new UnsafeUrlError("Too many redirects.");
+  return { finalUrl: current, response };
+}
+
+export async function fetchPage(
+  rawUrl: string,
+  opts: { maxBytes: number; timeoutMs?: number; userAgent?: string },
+): Promise<FetchedPage> {
+  const { finalUrl, response } = await fetchWithRedirects(rawUrl, opts);
 
   const type = response.headers.get("content-type") ?? "";
   if (type && !/text\/html|application\/xhtml|text\/plain/i.test(type)) {
     return {
-      finalUrl: current.toString(),
+      finalUrl: finalUrl.toString(),
       status: response.status,
       html: "",
       truncated: false,
@@ -97,11 +118,38 @@ export async function fetchPage(
 
   const { text, truncated } = await readCapped(response, opts.maxBytes);
   return {
-    finalUrl: current.toString(),
+    finalUrl: finalUrl.toString(),
     status: response.status,
     html: text,
     truncated,
   };
+}
+
+// Same SSRF guard/redirect handling as fetchPage, but allows JSON responses
+// fetchPage's HTML-only gate would reject. Returns null rather than throwing.
+export async function fetchJson<T>(
+  rawUrl: string,
+  opts: { maxBytes: number; timeoutMs?: number },
+): Promise<T | null> {
+  let response: Response;
+  try {
+    ({ response } = await fetchWithRedirects(rawUrl, { ...opts, accept: "application/json" }));
+  } catch {
+    return null;
+  }
+  if (response.status !== 200) return null;
+
+  const type = response.headers.get("content-type") ?? "";
+  if (type && !/application\/json/i.test(type)) return null;
+
+  const { text, truncated } = await readCapped(response, opts.maxBytes);
+  if (truncated || !text) return null;
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
 }
 
 async function readCapped(res: Response, maxBytes: number) {

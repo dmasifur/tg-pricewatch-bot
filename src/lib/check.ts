@@ -7,9 +7,6 @@ import { bump } from "./ops";
 import { formatPrice } from "./price";
 import { escapeHtml, type Telegram } from "./telegram";
 
-export const USER_AGENT =
-  "PriceWatchBot/1.0 (+https://asifur.dev; portfolio demo; contact via Telegram)";
-
 const FAILING_AFTER = 3;
 const PAUSE_AFTER = 6;
 const MAX_BACKOFF_MINUTES = 24 * 60;
@@ -56,7 +53,6 @@ export async function checkWatch(
   try {
     const page = await fetchPage(watch.url, {
       maxBytes: Number(env.MAX_BODY_BYTES),
-      userAgent: USER_AGENT,
     });
     status = page.status;
 

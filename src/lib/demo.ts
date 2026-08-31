@@ -1,5 +1,4 @@
 import type { Env, InlineButton } from "../types";
-import { USER_AGENT } from "./check";
 import { resolve, scanPage } from "./extract";
 import { fetchPage } from "./fetcher";
 import { sparkline } from "./history";
@@ -186,7 +185,6 @@ async function livePrice(
   try {
     const page = await fetchPage(product.url, {
       maxBytes: Number(env.MAX_BODY_BYTES),
-      userAgent: USER_AGENT,
     });
     if (page.status < 400 && page.html.length > 0) {
       const result = resolve(await scanPage(page.html));
