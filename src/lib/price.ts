@@ -46,7 +46,7 @@ export function parsePrice(raw: unknown, currencyHint?: string | null): ParsedPr
 
   // schema.org often gives a clean number already
   if (typeof raw === "number") {
-    return Number.isFinite(raw) && raw >= 0
+    return Number.isFinite(raw) && raw > 0
       ? { amount: round2(raw), currency: currencyHint?.toUpperCase() ?? null }
       : null;
   }
@@ -92,7 +92,7 @@ export function parsePrice(raw: unknown, currencyHint?: string | null): ParsedPr
   }
 
   const amount = Number.parseFloat(normalised);
-  if (!Number.isFinite(amount) || amount < 0 || amount > 1e12) return null;
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e12) return null;
   return { amount: round2(amount), currency };
 }
 

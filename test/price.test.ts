@@ -21,6 +21,9 @@ describe("parsePrice", () => {
     ["free", null, null],
     ["", null, null],
     ["--", null, null],
+    ["$00", null, null],
+    ["$0.00", null, null],
+    ["0", null, null],
   ];
 
   for (const [input, expected, currency] of cases) {
@@ -46,6 +49,12 @@ describe("parsePrice", () => {
   it("rejects absurd magnitudes and negatives", () => {
     expect(parsePrice("-5.00")).toEqual({ amount: 5, currency: null }); // sign stripped by design
     expect(parsePrice("9".repeat(20))).toBeNull();
+  });
+
+  it("rejects a zero price, string or numeric", () => {
+    // A stored $0 would make every future check register as a 100% drop.
+    expect(parsePrice("$0.00")).toBeNull();
+    expect(parsePrice(0, "usd")).toBeNull();
   });
 });
 
