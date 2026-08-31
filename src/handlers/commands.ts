@@ -50,7 +50,7 @@ export async function handleMessage(msg: TgMessage, env: Env, tg: Telegram): Pro
   const text = (msg.text ?? "").trim();
   if (!text) return;
 
-  const user = await ensureUser(chatId, env);
+  const user = await ensureUser(chatId, msg.from, env);
 
   if (user.pending_action !== null && !text.startsWith("/")) {
     const [kind, arg] = user.pending_action.split(":");
@@ -211,11 +211,17 @@ async function resolvePendingAction(
   );
 }
 
-async function ensureUser(chatId: number, env: Env): Promise<{ pending_action: string | null }> {
+async function ensureUser(
+  chatId: number,
+  from: TgUser | undefined,
+  env: Env,
+): Promise<{ pending_action: string | null }> {
+  // Upsert so a username set/changed after the first message is captured too.
   await env.DB.prepare(
-    "INSERT INTO users (chat_id, first_seen) VALUES (?, ?) ON CONFLICT(chat_id) DO NOTHING",
+    `INSERT INTO users (chat_id, first_seen, username, first_name) VALUES (?, ?, ?, ?)
+     ON CONFLICT(chat_id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name`,
   )
-    .bind(chatId, new Date().toISOString())
+    .bind(chatId, new Date().toISOString(), from?.username ?? null, from?.first_name ?? null)
     .run();
 
   const user = await env.DB.prepare("SELECT pending_action FROM users WHERE chat_id = ?")
