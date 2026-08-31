@@ -1,5 +1,5 @@
 import { handleCallback } from "./handlers/callbacks";
-import { handleMessage } from "./handlers/commands";
+import { commandMenu, handleMessage } from "./handlers/commands";
 import { advanceDemos } from "./lib/demo";
 import { report } from "./lib/health";
 import { alertAdmin } from "./lib/ops";
@@ -52,9 +52,14 @@ export default {
         ? advanceDemos(env, tg).then((n) => {
             if (n > 0) console.log(`demo: advanced ${n}`);
           })
-        : runSweep(env, tg).then((stats) => {
-            console.log(`sweep checked=${stats.checked} warned=${stats.warned}`);
-          });
+        : runSweep(env, tg)
+            .then((stats) => {
+              console.log(`sweep checked=${stats.checked} warned=${stats.warned}`);
+            })
+            // Idempotent and cheap; riding the 5-min sweep cron keeps the
+            // Telegram command menu converged without needing a one-shot
+            // migration step or extra state to track whether it's been set.
+            .then(() => tg.setMyCommands(commandMenu()));
 
     ctx.waitUntil(
       job.catch(async (error: unknown) => {
