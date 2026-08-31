@@ -72,4 +72,18 @@ describe("scanCandidates", () => {
   it("survives a page with no prices at all", async () => {
     expect(await scanCandidates("<html><body><p>nothing here</p></body></html>")).toEqual([]);
   });
+
+  it("doesn't crash on inline SVG (self-closing foreign-content tags reject onEndTag)", async () => {
+    const html =
+      '<html><body><svg><path d="M0 0"/><circle r="1"/></svg><p id="price">$9.99</p></body></html>';
+    const candidates = await scanCandidates(html);
+    expect(candidates[0]?.text).toBe("$9.99");
+  });
+
+  it("still ranks correctly around a mix of nested and malformed markup", async () => {
+    const html =
+      '<div><svg><path/></svg><span class="price">$12.00</span><br><p>Shipping $2</p></div>';
+    const candidates = await scanCandidates(html);
+    expect(candidates[0]?.text).toBe("$12.00");
+  });
 });

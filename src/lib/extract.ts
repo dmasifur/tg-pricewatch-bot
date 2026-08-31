@@ -186,10 +186,31 @@ export async function scanCandidates(html: string): Promise<PriceCandidate[]> {
     found.set(text, { text, selector, score: scoreOf(stack, found.size) });
   };
 
+  // SVG/MathML self-closing tags make HTMLRewriter's onEndTag() throw ("No end tag."); skip them.
+  const FOREIGN_ROOTS = new Set(["svg", "math"]);
+  let foreignDepth = 0;
+
   await new HTMLRewriter()
     .on("*", {
       element(el) {
         if (el.tagName === "script" || el.tagName === "style") return;
+
+        if (foreignDepth > 0 || FOREIGN_ROOTS.has(el.tagName)) {
+          foreignDepth++;
+          if (!VOID_TAGS.has(el.tagName)) {
+            try {
+              el.onEndTag(() => {
+                foreignDepth--;
+              });
+            } catch {
+              foreignDepth--;
+            }
+          } else {
+            foreignDepth--;
+          }
+          return;
+        }
+
         const frame = {
           tag: el.tagName,
           id: el.getAttribute("id") ?? undefined,
@@ -197,10 +218,16 @@ export async function scanCandidates(html: string): Promise<PriceCandidate[]> {
         };
         stack.push(frame);
         if (!VOID_TAGS.has(el.tagName)) {
-          el.onEndTag(() => {
+          try {
+            el.onEndTag(() => {
+              flush();
+              stack.pop();
+            });
+          } catch {
+            // Malformed/self-closing tags can reject onEndTag outright; treat as closed.
             flush();
             stack.pop();
-          });
+          }
         } else {
           stack.pop();
         }
