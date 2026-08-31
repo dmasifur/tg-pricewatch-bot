@@ -69,6 +69,8 @@ export async function continueHire(
     .bind(chatId)
     .run();
 
+  await notifyAdminOfLead(chatId, value, from, env, tg);
+
   const keyboard: InlineButton[][] = [
     [{ text: "See my gigs", url: env.GIG_URL }],
     [{ text: "Portfolio", url: env.PORTFOLIO_URL }],
@@ -79,5 +81,50 @@ export async function continueHire(
     `Got it — I'll be in touch at <b>${escapeHtml(value)}</b>.\n\n` +
       "Meanwhile, here's the same machinery packaged up. Anything stored here goes away with /forget.",
     keyboard,
+  );
+}
+
+export function leadDisplayName(from: TgUser | undefined, chatId: number): string {
+  return from?.username ? `@${from.username}` : (from?.first_name ?? `chat ${chatId}`);
+}
+
+export function leadNotificationText(
+  who: string,
+  useCase: string | null,
+  contact: string,
+  chatId: number,
+): string {
+  return (
+    `💼 New lead from ${escapeHtml(who)}\n\n` +
+    `<b>Wants:</b> ${escapeHtml(useCase ?? "—")}\n` +
+    `<b>Reach them at:</b> ${escapeHtml(contact)}\n` +
+    `<b>Chat ID:</b> <code>${chatId}</code>`
+  );
+}
+
+export function resolveAdminChatId(env: Env): number | null {
+  const adminId = Number(env.ADMIN_CHAT_ID);
+  return Number.isFinite(adminId) && adminId !== 0 ? adminId : null;
+}
+
+// Doesn't go through alertAdmin (src/lib/ops.ts): its per-key cooldown would
+// silently drop any lead arriving within the cooldown window of the last one.
+async function notifyAdminOfLead(
+  chatId: number,
+  contact: string,
+  from: TgUser | undefined,
+  env: Env,
+  tg: Telegram,
+): Promise<void> {
+  const adminId = resolveAdminChatId(env);
+  if (adminId === null) return;
+
+  const lead = await env.DB.prepare("SELECT use_case FROM leads WHERE chat_id = ?")
+    .bind(chatId)
+    .first<{ use_case: string | null }>();
+
+  await tg.sendMessage(
+    adminId,
+    leadNotificationText(leadDisplayName(from, chatId), lead?.use_case ?? null, contact, chatId),
   );
 }
