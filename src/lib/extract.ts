@@ -1,7 +1,13 @@
+import { findEmbeddedPrice } from "./embedded";
 import { availabilityToBool, findProduct } from "./jsonld";
 import { type ParsedPrice, parsePrice } from "./price";
 
 const MAX_LD_BLOCK = 256 * 1024;
+const MAX_EMBEDDED_BLOCK = 256 * 1024;
+const MAX_EMBEDDED_SCRIPTS = 12;
+// Some sites put price data in a hidden <div> rather than a <script> tag;
+// this whole-page fallback catches those, tried only after script matches.
+const MAX_EMBEDDED_FULLPAGE = 4 * 1024 * 1024;
 const VOID_TAGS = new Set([
   "area",
   "base",
@@ -21,6 +27,7 @@ const VOID_TAGS = new Set([
 
 export interface PageSignals {
   jsonLd: string[];
+  embeddedScripts: string[];
   metaPrice?: string;
   metaCurrency?: string;
   metaAvailability?: string;
@@ -35,12 +42,16 @@ export interface ExtractResult {
   price: ParsedPrice | null;
   title?: string;
   inStock?: boolean;
-  source: "selector" | "jsonld" | "meta" | "microdata" | "none";
+  source: "selector" | "jsonld" | "meta" | "microdata" | "embedded" | "none";
 }
 
+const INLINE_SCRIPT_TYPES = new Set(["", "text/javascript", "application/javascript", "module"]);
+
 export async function scanPage(html: string, selector?: string): Promise<PageSignals> {
-  const signals: PageSignals = { jsonLd: [] };
+  const signals: PageSignals = { jsonLd: [], embeddedScripts: [] };
   let ldBuffer = "";
+  let embeddedBuffer = "";
+  let collectEmbedded = false;
   let titleBuffer = "";
   let selectorBuffer = "";
 
@@ -51,6 +62,18 @@ export async function scanPage(html: string, selector?: string): Promise<PageSig
     ldBuffer = "";
   };
 
+  const flushEmbedded = () => {
+    const block = embeddedBuffer.trim();
+    if (
+      block &&
+      block.length <= MAX_EMBEDDED_BLOCK &&
+      signals.embeddedScripts.length < MAX_EMBEDDED_SCRIPTS
+    )
+      signals.embeddedScripts.push(block);
+    embeddedBuffer = "";
+    collectEmbedded = false;
+  };
+
   let rewriter = new HTMLRewriter()
     .on('script[type="application/ld+json"]', {
       element() {
@@ -58,6 +81,21 @@ export async function scanPage(html: string, selector?: string): Promise<PageSig
       },
       text(chunk) {
         if (ldBuffer.length < MAX_LD_BLOCK) ldBuffer += chunk.text;
+      },
+    })
+    // Collected for src/lib/embedded.ts; external scripts (with `src`) are skipped.
+    .on("script", {
+      element(el) {
+        flushEmbedded();
+        const type = (el.getAttribute("type") ?? "").toLowerCase();
+        collectEmbedded =
+          !el.getAttribute("src") &&
+          type !== "application/ld+json" &&
+          INLINE_SCRIPT_TYPES.has(type);
+      },
+      text(chunk) {
+        if (collectEmbedded && embeddedBuffer.length < MAX_EMBEDDED_BLOCK)
+          embeddedBuffer += chunk.text;
       },
     })
     .on("meta", {
@@ -106,6 +144,8 @@ export async function scanPage(html: string, selector?: string): Promise<PageSig
   await rewriter.transform(new Response(html)).arrayBuffer();
 
   flushLd();
+  flushEmbedded();
+  signals.embeddedScripts.push(html.slice(0, MAX_EMBEDDED_FULLPAGE));
   if (titleBuffer.trim()) signals.titleTag = titleBuffer.trim();
   if (selectorBuffer.trim()) signals.selectorText = selectorBuffer.trim();
   return signals;
@@ -156,6 +196,9 @@ export function resolve(signals: PageSignals): ExtractResult {
     const price = parsePrice(signals.itempropPrice, signals.itempropCurrency ?? null);
     if (price) return { price, title, source: "microdata" };
   }
+
+  const embedded = findEmbeddedPrice(signals.embeddedScripts);
+  if (embedded) return { price: embedded.price, title, source: "embedded" };
 
   return { price: null, title, source: "none" };
 }

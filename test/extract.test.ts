@@ -55,6 +55,45 @@ describe("scanPage + resolve — no structured data", () => {
   });
 });
 
+describe("scanPage + resolve — real captured pages", () => {
+  const loadLive = (name: string) => Bun.file(`${import.meta.dir}/fixtures/live/${name}`).text();
+
+  it("Daraz: resolves via the embedded stage (price lives only in an inline tracking script)", async () => {
+    const result = resolve(await scanPage(await loadLive("www-daraz-com-bd-1788200683959.html")));
+    expect(result.source).toBe("embedded");
+    expect(result.price?.amount).toBe(1000);
+    expect(result.price?.currency).toBe("BDT");
+  });
+
+  it("Amazon: resolves via the embedded stage (price lives in a hidden data-island div, not JSON-LD/microdata)", async () => {
+    const result = resolve(await scanPage(await loadLive("amazon-B0H2VN7622.html")));
+    expect(result.source).toBe("embedded");
+    expect(result.price?.amount).toBe(39.99);
+    expect(result.price?.currency).toBe("USD");
+  });
+
+  it("Bikroy: resolves via microdata", async () => {
+    const result = resolve(await scanPage(await loadLive("bikroy-com-1788200684592.html")));
+    expect(result.source).toBe("microdata");
+    expect(result.price?.amount).toBe(15500);
+    expect(result.price?.currency).toBe("BDT");
+  });
+
+  it("Shopify (Allbirds): resolves via JSON-LD", async () => {
+    const result = resolve(await scanPage(await loadLive("shopify-allbirds-flip-flop.html")));
+    expect(result.source).toBe("jsonld");
+    expect(result.price?.amount).toBe(50);
+    expect(result.price?.currency).toBe("USD");
+  });
+
+  it("WooCommerce: resolves via og:price meta tags", async () => {
+    const result = resolve(await scanPage(await loadLive("woocommerce-com-1788200689619.html")));
+    expect(result.source).toBe("meta");
+    expect(result.price?.amount).toBe(279);
+    expect(result.price?.currency).toBe("USD");
+  });
+});
+
 describe("scanCandidates", () => {
   it("ranks a price-classed node above cart and shipping noise", async () => {
     const candidates = await scanCandidates(await load("no-structured-data.html"));
