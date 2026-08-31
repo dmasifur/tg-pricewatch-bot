@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS watches (
   target_price    REAL,
   notify_mode     TEXT    NOT NULL DEFAULT 'any_drop',   -- any_drop | target | restock
   selector        TEXT,
-  selector_source TEXT,                                   -- jsonld | meta | user_tap | user_css
+  selector_source TEXT,                                   -- jsonld | meta | microdata | embedded | user_tap | user_css
   interval_minutes INTEGER NOT NULL DEFAULT 60,
   next_check_at   TEXT    NOT NULL,
   expires_at      TEXT    NOT NULL,

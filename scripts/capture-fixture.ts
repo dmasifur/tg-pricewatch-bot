@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { USER_AGENT } from "../src/lib/check";
+import { USER_AGENT } from "../src/lib/fetcher";
 
 const url = process.argv[2];
 if (url === undefined) {

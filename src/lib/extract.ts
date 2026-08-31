@@ -1,7 +1,13 @@
+import { findEmbeddedPrice } from "./embedded";
 import { availabilityToBool, findProduct } from "./jsonld";
 import { type ParsedPrice, parsePrice } from "./price";
 
 const MAX_LD_BLOCK = 256 * 1024;
+const MAX_EMBEDDED_BLOCK = 256 * 1024;
+const MAX_EMBEDDED_SCRIPTS = 12;
+// Some sites put price data in a hidden <div> rather than a <script> tag;
+// this whole-page fallback catches those, tried only after script matches.
+const MAX_EMBEDDED_FULLPAGE = 4 * 1024 * 1024;
 const VOID_TAGS = new Set([
   "area",
   "base",
@@ -21,6 +27,7 @@ const VOID_TAGS = new Set([
 
 export interface PageSignals {
   jsonLd: string[];
+  embeddedScripts: string[];
   metaPrice?: string;
   metaCurrency?: string;
   metaAvailability?: string;
@@ -35,12 +42,16 @@ export interface ExtractResult {
   price: ParsedPrice | null;
   title?: string;
   inStock?: boolean;
-  source: "selector" | "jsonld" | "meta" | "microdata" | "none";
+  source: "selector" | "jsonld" | "meta" | "microdata" | "embedded" | "none";
 }
 
+const INLINE_SCRIPT_TYPES = new Set(["", "text/javascript", "application/javascript", "module"]);
+
 export async function scanPage(html: string, selector?: string): Promise<PageSignals> {
-  const signals: PageSignals = { jsonLd: [] };
+  const signals: PageSignals = { jsonLd: [], embeddedScripts: [] };
   let ldBuffer = "";
+  let embeddedBuffer = "";
+  let collectEmbedded = false;
   let titleBuffer = "";
   let selectorBuffer = "";
 
@@ -51,6 +62,18 @@ export async function scanPage(html: string, selector?: string): Promise<PageSig
     ldBuffer = "";
   };
 
+  const flushEmbedded = () => {
+    const block = embeddedBuffer.trim();
+    if (
+      block &&
+      block.length <= MAX_EMBEDDED_BLOCK &&
+      signals.embeddedScripts.length < MAX_EMBEDDED_SCRIPTS
+    )
+      signals.embeddedScripts.push(block);
+    embeddedBuffer = "";
+    collectEmbedded = false;
+  };
+
   let rewriter = new HTMLRewriter()
     .on('script[type="application/ld+json"]', {
       element() {
@@ -58,6 +81,21 @@ export async function scanPage(html: string, selector?: string): Promise<PageSig
       },
       text(chunk) {
         if (ldBuffer.length < MAX_LD_BLOCK) ldBuffer += chunk.text;
+      },
+    })
+    // Collected for src/lib/embedded.ts; external scripts (with `src`) are skipped.
+    .on("script", {
+      element(el) {
+        flushEmbedded();
+        const type = (el.getAttribute("type") ?? "").toLowerCase();
+        collectEmbedded =
+          !el.getAttribute("src") &&
+          type !== "application/ld+json" &&
+          INLINE_SCRIPT_TYPES.has(type);
+      },
+      text(chunk) {
+        if (collectEmbedded && embeddedBuffer.length < MAX_EMBEDDED_BLOCK)
+          embeddedBuffer += chunk.text;
       },
     })
     .on("meta", {
@@ -106,6 +144,8 @@ export async function scanPage(html: string, selector?: string): Promise<PageSig
   await rewriter.transform(new Response(html)).arrayBuffer();
 
   flushLd();
+  flushEmbedded();
+  signals.embeddedScripts.push(html.slice(0, MAX_EMBEDDED_FULLPAGE));
   if (titleBuffer.trim()) signals.titleTag = titleBuffer.trim();
   if (selectorBuffer.trim()) signals.selectorText = selectorBuffer.trim();
   return signals;
@@ -157,6 +197,9 @@ export function resolve(signals: PageSignals): ExtractResult {
     if (price) return { price, title, source: "microdata" };
   }
 
+  const embedded = findEmbeddedPrice(signals.embeddedScripts);
+  if (embedded) return { price: embedded.price, title, source: "embedded" };
+
   return { price: null, title, source: "none" };
 }
 
@@ -169,6 +212,11 @@ export interface PriceCandidate {
 const CURRENCY_TEXT =
   /(?:[$€£¥₹₽₺₩৳]|\b(?:USD|EUR|GBP|JPY|INR|AUD|CAD|BRL|PLN|SEK|BDT)\b)\s*\d[\d.,\s]{0,14}|\d[\d.,]{0,14}\s*(?:€|£|zł|kr|₹|৳)/i;
 const PRICEY_ATTR = /price|amount|cost|offer|money/i;
+// Ancestor markers scanCandidates uses to boost the real price / penalise cross-sell widgets.
+const PRIMARY_PRICE_CONTAINER =
+  /coreprice|priceblock|apexpricetopay|a-price|price-current|saleprice/i;
+const CROSS_SELL_CONTAINER =
+  /\bsims\b|p13n|similar|related|also-?bought|you-?may-?also|value-?pick|recommend|bundle/i;
 
 export async function scanCandidates(html: string): Promise<PriceCandidate[]> {
   const stack: Array<{ tag: string; id?: string; cls?: string }> = [];
@@ -186,10 +234,31 @@ export async function scanCandidates(html: string): Promise<PriceCandidate[]> {
     found.set(text, { text, selector, score: scoreOf(stack, found.size) });
   };
 
+  // SVG/MathML self-closing tags make HTMLRewriter's onEndTag() throw ("No end tag."); skip them.
+  const FOREIGN_ROOTS = new Set(["svg", "math"]);
+  let foreignDepth = 0;
+
   await new HTMLRewriter()
     .on("*", {
       element(el) {
         if (el.tagName === "script" || el.tagName === "style") return;
+
+        if (foreignDepth > 0 || FOREIGN_ROOTS.has(el.tagName)) {
+          foreignDepth++;
+          if (!VOID_TAGS.has(el.tagName)) {
+            try {
+              el.onEndTag(() => {
+                foreignDepth--;
+              });
+            } catch {
+              foreignDepth--;
+            }
+          } else {
+            foreignDepth--;
+          }
+          return;
+        }
+
         const frame = {
           tag: el.tagName,
           id: el.getAttribute("id") ?? undefined,
@@ -197,10 +266,16 @@ export async function scanCandidates(html: string): Promise<PriceCandidate[]> {
         };
         stack.push(frame);
         if (!VOID_TAGS.has(el.tagName)) {
-          el.onEndTag(() => {
+          try {
+            el.onEndTag(() => {
+              flush();
+              stack.pop();
+            });
+          } catch {
+            // Malformed/self-closing tags can reject onEndTag outright; treat as closed.
             flush();
             stack.pop();
-          });
+          }
         } else {
           stack.pop();
         }
@@ -241,6 +316,13 @@ function scoreOf(stack: Array<{ tag: string; id?: string; cls?: string }>, order
   }
   const leaf = stack[stack.length - 1];
   if (leaf && (leaf.id || leaf.cls)) score += 10;
+
+  // Checks the full ancestor chain, not just the nearest 3 frames.
+  for (const frame of stack) {
+    const marker = `${frame.id ?? ""} ${frame.cls ?? ""}`;
+    if (CROSS_SELL_CONTAINER.test(marker)) score -= 60;
+    if (PRIMARY_PRICE_CONTAINER.test(marker)) score += 50;
+  }
   return score;
 }
 

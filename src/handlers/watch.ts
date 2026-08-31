@@ -2,11 +2,10 @@ import { type PriceCandidate, resolve, scanCandidates, scanPage } from "../lib/e
 import { assertSafeUrl, type FetchedPage, fetchPage, UnsafeUrlError } from "../lib/fetcher";
 import { checkWatchLimits, clampInterval, isoIn, recordRegistration } from "../lib/limits";
 import { formatPrice, parsePrice } from "../lib/price";
+import { fetchShopifyProduct, looksLikeShopifyProductPage } from "../lib/shopify";
 import { escapeHtml, type Telegram } from "../lib/telegram";
+import { findUnsupportedHost } from "../lib/unsupported-hosts";
 import type { Env, InlineButton } from "../types";
-
-const USER_AGENT =
-  "PriceWatchBot/1.0 (+https://asifur.dev; this bot is for demo purpose; contact via Telegram)";
 
 export async function startWatch(
   chatId: number,
@@ -32,6 +31,17 @@ export async function startWatch(
     return;
   }
 
+  const unsupported = findUnsupportedHost(url.hostname);
+  if (unsupported) {
+    await tg.sendMessage(
+      chatId,
+      `${unsupported.name} ${unsupported.reason}, so I can't watch this one.\n\n` +
+        `These work well: Amazon, Daraz, Bikroy, and most Shopify or WooCommerce stores.`,
+      [[{ text: "❓ How do I add a link?", callback_data: "guide:open" }]],
+    );
+    return;
+  }
+
   const progress = await tg.sendMessage(chatId, `Reading <b>${escapeHtml(url.hostname)}</b>…`);
   const messageId = (progress as { message_id?: number } | null)?.message_id;
   const edit = (text: string, kb?: InlineButton[][]) =>
@@ -41,19 +51,37 @@ export async function startWatch(
   try {
     page = await fetchPage(url.toString(), {
       maxBytes: Number(env.MAX_BODY_BYTES),
-      userAgent: USER_AGENT,
     });
   } catch (err) {
     console.warn("fetch failed", url.hostname, String(err));
+    const timedOut = err instanceof Error && err.name === "TimeoutError";
     await edit(
-      "That page didn't load — it may be blocking me or temporarily down. Try another link, or /demo to see how this works.",
+      timedOut
+        ? `${escapeHtml(url.hostname)} took too long to respond. It might be slow right now — try again in a moment, or send a different link.`
+        : `I couldn't reach ${escapeHtml(url.hostname)} — it may be blocking automated requests, or the link may be broken. Double-check the link, or try a different product page.`,
+      helpKeyboard(),
     );
     return;
   }
 
+  if (page.status === 404) {
+    await edit(
+      `That page doesn't exist (404) — the link may be broken or the product may have been removed.`,
+      helpKeyboard(),
+    );
+    return;
+  }
+  if (page.status === 403 || page.status === 429) {
+    await edit(
+      `${escapeHtml(url.hostname)} is blocking automated requests to this page right now. Try again later, or send a different product link.`,
+      helpKeyboard(),
+    );
+    return;
+  }
   if (page.status >= 400 || !page.html) {
     await edit(
-      `That page returned ${page.status || "no readable content"}. Try another link, or /demo.`,
+      `That page returned an error (status ${page.status || "unknown"}). Try another link, or check the page loads in your own browser first.`,
+      helpKeyboard(),
     );
     return;
   }
@@ -61,25 +89,44 @@ export async function startWatch(
   const result = resolve(await scanPage(page.html));
   await recordRegistration(chatId, env);
 
-  if (result.price) {
-    const id = await insertWatch(
+  let price = result.price;
+  let title = result.title;
+  let source: string = result.source;
+
+  // Fast path: generic extraction found nothing, but this looks like Shopify.
+  if (!price && looksLikeShopifyProductPage(page.html, url.pathname)) {
+    const shopify = await fetchShopifyProduct(url.origin, url.pathname, {
+      maxBytes: Number(env.MAX_BODY_BYTES),
+      timeoutMs: 6_000,
+    });
+    if (shopify) {
+      price = shopify.price;
+      title = shopify.title || title;
+      source = "shopify_json";
+    }
+  }
+
+  if (price) {
+    const inserted = await insertWatch(
       chatId,
       url,
       page.finalUrl,
-      result.title,
-      result.price,
-      resultSource(result.source),
+      title,
+      price,
+      resultSource(source),
       env,
     );
-    if (!id) throw new Error("Id is undefined or not found");
+    if (!inserted) throw new Error("Id is undefined or not found");
 
     await edit(
-      confirmationText(
-        result.title,
-        url.hostname,
-        formatPrice(result.price.amount, result.price.currency),
-      ),
-      confirmationKeyboard(id, env),
+      summaryText({
+        title,
+        host: url.hostname,
+        price: formatPrice(price.amount, price.currency),
+        notifyMode: "any_drop",
+        intervalMinutes: inserted.intervalMinutes,
+      }),
+      confirmationKeyboard(inserted.id, env),
     );
     return;
   }
@@ -88,18 +135,28 @@ export async function startWatch(
   const candidates = await scanCandidates(page.html);
   if (!candidates.length) {
     await edit(
-      "I couldn't find a price on that page. Some sites render prices only in the browser, which I can't see. Try a different product page, or /demo.",
+      "I couldn't find a price on that page — some sites only show it after running JavaScript in a full browser, which I can't do. " +
+        "Try a different product page on the same site, or see /guide for which sites work best.",
+      helpKeyboard(),
     );
     return;
   }
 
   const id = await insertPending(chatId, url, page.finalUrl, result.title, candidates, env);
+  const titleLine = result.title ? `<b>${escapeHtml(result.title)}</b>\n` : "";
   await edit(
-    `I couldn't identify the price automatically. I found these numbers on the page — which one is it?`,
+    `${titleLine}I couldn't identify the price automatically — I found a few numbers on the page. Which one is it?`,
     candidates
       .map((c, i) => [{ text: c.text, callback_data: `w:${id}:c:${i}` }])
       .concat([[{ text: "None of these", callback_data: `w:${id}:x` }]]),
   );
+}
+
+function helpKeyboard(): InlineButton[][] {
+  return [
+    [{ text: "❓ How do I add a link?", callback_data: "guide:open" }],
+    [{ text: "📋 My watches", callback_data: "list:1" }],
+  ];
 }
 
 export async function confirmCandidate(
@@ -149,7 +206,7 @@ async function insertWatch(
   price: { amount: number; currency: string | null },
   source: string,
   env: Env,
-): Promise<number | undefined> {
+): Promise<{ id: number; intervalMinutes: number } | undefined> {
   const now = new Date().toISOString();
   const interval = clampInterval(360, env);
   const result = await env.DB.prepare(
@@ -171,7 +228,7 @@ async function insertWatch(
       now,
     )
     .first<{ id: number }>();
-  return result?.id;
+  return result?.id === undefined ? undefined : { id: result.id, intervalMinutes: interval };
 }
 
 async function insertPending(
@@ -203,11 +260,28 @@ async function insertPending(
   return result?.id;
 }
 
-function confirmationText(title: string | undefined, host: string, price: string): string {
+export interface WatchSummaryParams {
+  title: string | undefined;
+  host: string;
+  price: string;
+  notifyMode: string;
+  targetPrice?: string;
+  intervalMinutes: number;
+}
+
+// Also used to re-render the message in place after a mode/interval tap.
+export function summaryText(params: WatchSummaryParams): string {
+  const alertLine =
+    params.notifyMode === "target" && params.targetPrice
+      ? `🎯 Alert when it hits <b>${escapeHtml(params.targetPrice)}</b>`
+      : "🔔 Alert on any price drop";
+  const interval =
+    params.intervalMinutes >= 60 ? `${params.intervalMinutes / 60}h` : `${params.intervalMinutes}m`;
   return (
-    `<b>${escapeHtml(title ?? host)}</b>\n` +
-    `Current price: <b>${escapeHtml(price)}</b>\n\n` +
-    `I'll check every 6 hours and message you when it drops.`
+    `<b>${escapeHtml(params.title ?? params.host)}</b>\n` +
+    `Current price: <b>${escapeHtml(params.price)}</b>\n` +
+    `${alertLine}\n` +
+    `Checking every ${interval}`
   );
 }
 
